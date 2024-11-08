@@ -9,12 +9,12 @@ from prophet.plot import plot_plotly
 from plotly import graph_objs as go
 
 
-START="2015-01-01"
+START="2020-01-01"
 TODAY = date.today().strftime("%Y-%m-%d")
 
 st.title("Stock Prediction App")
 
-stocks=("AAPL","GOOG","MSFT","GME")
+stocks=("GOOG","MSFT","GME","SONY")
 
 selected_stock = st.selectbox("Select dataset for prediction", options=stocks)
 
@@ -35,6 +35,85 @@ data.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
 st.subheader("Raw data")
 st.write(data.tail())
 
+# Check for missing values
+st.subheader("Missing Values")
+st.write(data.isnull().sum())
+
+# Fill missing values
+data = data.fillna(method='ffill')
+
+# Convert Date column to datetime
+data['Date'] = pd.to_datetime(data['Date'])
+
+# Convert numeric columns to numeric data type
+for col in ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']:
+    data[col] = pd.to_numeric(data[col])
+
+
+# Detect and remove outliers
+Q1 = data['Close'].quantile(0.25)
+Q3 = data['Close'].quantile(0.75)
+IQR = Q3 - Q1
+outlier_mask = (data['Close'] < Q1 - 1.5 * IQR) | (data['Close'] > Q3 + 1.5 * IQR)
+data = data[~outlier_mask]
+
+st.subheader("Data Summary")
+st.write(data.describe())
+
+
+st.subheader("Candlestick Chart - Last 10 Days")
+
+fig = go.Figure(data=[go.Candlestick(
+    x=data['Date'][-10:],
+    open=data['Open'][-10:],
+    high=data['High'][-10:],
+    low=data['Low'][-10:],
+    close=data['Close'][-10:],
+    increasing_line_color='lime',  # Bright green for bullish candles
+    decreasing_line_color='crimson' # Bright red for bearish candles
+)])
+
+fig.update_layout(
+    title={
+        'text': 'Stock Price Candlestick Chart - Last 10 Days',
+        'font': {'size': 24, 'color': 'white'}
+    },
+    xaxis_title='Date',
+    yaxis_title='Price',
+    xaxis_rangeslider_visible=True,
+    template='plotly_dark',           # Dark theme for improved contrast
+    xaxis=dict(
+        showgrid=True,                # Gridlines for readability
+        gridcolor='gray'
+    ),
+    yaxis=dict(
+        showgrid=True,
+        gridcolor='gray'
+    )
+)
+
+st.plotly_chart(fig)
+
+st.subheader("Stock Price with Moving Average")
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=data['Date'], y=data['Close'], mode='lines', name='Stock Price'))
+fig.add_trace(go.Scatter(x=data['Date'], y=data['Close'].rolling(window=20).mean(), mode='lines', name='20-day Moving Average'))
+fig.update_layout(
+    title='Stock Price with Moving Average',
+    xaxis_title='Date',
+    yaxis_title='Price',xaxis_rangeslider_visible=True)
+st.plotly_chart(fig)
+
+st.subheader("Stock Volume")
+fig = go.Figure()
+fig.add_trace(go.Bar(x=data['Date'], y=data['Volume'], name='Volume'))
+fig.update_layout(
+    title='Stock Volume',
+    xaxis_title='Date',
+    yaxis_title='Volume',xaxis_rangeslider_visible=True)
+st.plotly_chart(fig)
+
+
 def plot_raw_data():
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=data['Date'], y=data['Open'], name='stock_open'))
@@ -44,12 +123,6 @@ def plot_raw_data():
 
 plot_raw_data()
 
-# # Display column names
-# st.subheader("Column Names")
-# st.write(data.columns)
-
-# Prepare data for Prophet
-# Prepare data for Prophet
 df_train = data[['Date', 'Close']].copy()  # Select Date and Close columns
 df_train = df_train.rename(columns={"Date": "ds", "Close": "y"})  # Rename for Prophet
 
