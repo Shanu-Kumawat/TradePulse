@@ -5,6 +5,12 @@ import yfinance as yf
 from prophet import Prophet
 from prophet.plot import plot_plotly
 from plotly import graph_objs as go
+import numpy as np
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+    
 
 # Constants
 START = "2020-01-01"
@@ -78,6 +84,56 @@ def prophet_forecast(data):
     forecast = model.predict(future)
     return model, forecast
 
+def lstm_forecast(data):
+    df = data[['Date', 'Close']].copy()
+    df.index = df['Date']
+    df = df.drop(columns=['Date'])
+
+    # Scale data
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(df)
+
+    # Create training data
+    train_size = int(len(scaled_data) * 0.8)
+    train_data = scaled_data[:train_size]
+    x_train, y_train = [], []
+    for i in range(60, len(train_data)):
+        x_train.append(train_data[i-60:i, 0])
+        y_train.append(train_data[i, 0])
+    x_train, y_train = np.array(x_train), np.array(y_train)
+    x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
+
+    # Build LSTM model
+    model = Sequential([
+        LSTM(50, return_sequences=True, input_shape=(x_train.shape[1], 1)),
+        LSTM(50, return_sequences=False),
+        Dense(25),
+        Dense(1)
+    ])
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    model.fit(x_train, y_train, batch_size=1, epochs=2)
+
+    # Prepare testing data
+    test_data = scaled_data[train_size - 60:]
+    x_test, y_test = [], scaled_data[train_size:]
+    for i in range(60, len(test_data)):
+        x_test.append(test_data[i-60:i, 0])
+    x_test = np.array(x_test)
+    x_test = np.reshape(x_test, (x_test.shape[0], x_test.shape[1], 1))
+
+    # Make predictions
+    predictions = model.predict(x_test)
+    predictions = scaler.inverse_transform(predictions)
+    
+    # Forecast future prices
+    last_60_days = scaled_data[-60:]
+    future_input = last_60_days.reshape((1, 60, 1))
+    future_pred = model.predict(future_input)
+    future_pred = scaler.inverse_transform(future_pred)
+
+    # Return predictions and future forecast
+    return predictions, future_pred
+
 # Load and process primary stock data
 data_load_state = st.text("Loading primary stock data...")
 data = load_data(selected_stock, candlestick_interval)
@@ -90,7 +146,7 @@ if data is not None:
     st.write(data.tail())
 
     # Tabs for organization
-    tab1, tab2, tab3, tab4 = st.tabs(["Candlestick Chart", "Moving Average", "Volume", "Forecast"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Candlestick Chart", "Moving Average", "Volume", "Forecast", "LSTM Model"])
 
     with tab1:
         st.plotly_chart(plot_candlestick(data, selected_stock))
@@ -109,33 +165,53 @@ if data is not None:
         st.plotly_chart(plot_plotly(model, forecast))
         st.write(model.plot_components(forecast))
 
-# Comparison mode - Load and display data for additional stocks
-if enable_comparison:
-    for ticker in [stock2, stock3]:
-        if ticker:
-            comp_data = load_data(ticker, candlestick_interval)
-            if comp_data is not None:
-                comp_data = process_data(comp_data)
-                st.subheader(f"Comparison Stock Data for {ticker}")
+    
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import plotly.graph_objects as go
 
-                # Display each feature for comparison stocks
-                tab1, tab2, tab3, tab4 = st.tabs([f"{ticker} Candlestick", f"{ticker} Moving Avg",
-                                                  f"{ticker} Volume", f"{ticker} Forecast"])
+with tab5:
+    st.subheader("LSTM Model Prediction")
 
-                with tab1:
-                    st.plotly_chart(plot_candlestick(comp_data, ticker))
+    # Run LSTM forecasting
+    lstm_pred, future_pred = lstm_forecast(data)
 
-                with tab2:
-                    show_moving_avg = st.checkbox(f"Show Moving Average for {ticker}", value=True)
-                    st.plotly_chart(plot_moving_average(comp_data, ticker, show_moving_avg))
+    # Prepare data for plotting
+    data['LSTM Prediction'] = np.nan  # Initialize with NaNs
+    data['LSTM Prediction'].iloc[-len(lstm_pred):] = lstm_pred.flatten()  # Fill LSTM predictions in the last part of the series
 
-                with tab3:
-                    st.plotly_chart(plot_volume(comp_data, ticker))
+    # Calculate evaluation metrics
+    y_test = data['Close'].iloc[-len(lstm_pred):].values  # Actual values for the prediction period
+    mae = mean_absolute_error(y_test, lstm_pred)
+    mse = mean_squared_error(y_test, lstm_pred)
+    rmse = np.sqrt(mse)
+    r2 = r2_score(y_test, lstm_pred)
 
-                with tab4:
-                    comp_model, comp_forecast = prophet_forecast(comp_data)
-                    st.subheader(f"Forecast Data for {ticker}")
-                    st.write(comp_forecast.tail())
-                    st.plotly_chart(plot_plotly(comp_model, comp_forecast))
-                    st.write(comp_model.plot_components(comp_forecast))
+    # Plot LSTM predictions using Plotly
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=data['Date'], y=data['Close'], mode='lines', name="Actual Close Price", line=dict(color="blue")))
+    fig.add_trace(go.Scatter(x=data['Date'], y=data['LSTM Prediction'], mode='lines', name="LSTM Prediction", line=dict(color="orange")))
 
+    # Mark the next day predicted price
+    future_date = data['Date'].iloc[-1] + pd.Timedelta(days=1)
+    fig.add_trace(go.Scatter(x=[future_date], y=[future_pred[0][0]], mode='markers+text', text=f"{future_pred[0][0]:.2f}",
+                             name="Next Day Prediction", marker=dict(color="red", size=10),
+                             textposition="top center"))
+
+    # Customize the layout
+    fig.update_layout(
+        title=f"{selected_stock} - LSTM Prediction vs Actual Prices",
+        xaxis_title="Date",
+        yaxis_title="Stock Price",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+        template="plotly_dark",xaxis_rangeslider_visible=True
+    )
+
+    st.plotly_chart(fig)  # Display the plot in Streamlit
+
+    # Display LSTM metrics
+    st.write("### LSTM Model Evaluation Metrics")
+    st.write(f"Mean Absolute Error (MAE): {mae:.2f}")
+    st.write(f"Mean Squared Error (MSE): {mse:.2f}")
+    st.write(f"Root Mean Squared Error (RMSE): {rmse:.2f}")
+    st.write(f"R-squared: {r2:.2f}")
+    st.write(f"Predicted Price for Next Day: {future_pred[0][0]:.2f}")
