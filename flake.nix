@@ -13,10 +13,12 @@
     {
       devShell.x86_64-linux = pkgs.mkShell {
         buildInputs = [
-          pkgs.python312Packages.streamlit
-          pkgs.python312Packages.yfinance
-          pkgs.python312Packages.plotly
-          pkgs.python312Packages.prophet
+          pkgs.python311Packages.streamlit
+          pkgs.python311Packages.yfinance
+          pkgs.python311Packages.plotly
+          pkgs.python311Packages.prophet
+          pkgs.python311Packages.tensorflow
+          pkgs.python311Packages.scikit-learn
         ];
 
         shellHook = ''
